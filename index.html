@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Snake Game</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #333;
+            color: #eee;
+            font-family: monospace;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+
+        #game-container {
+            position: relative; /* Crucial for positioning the message overlay */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            background-color: #222;
+            border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0, 255, 0, 0.5);
+            margin: 20px;
+            max-width: 90vw; /* Ensure it fits on smaller screens */
+            box-sizing: border-box;
+        }
+
+        #gameCanvas {
+            border: 2px solid #0f0;
+            background-color: #000;
+            display: block; /* Remove extra space below canvas */
+            width: 100%; /* Make canvas width responsive */
+            max-width: 500px; /* Cap canvas width */
+            aspect-ratio: 1 / 1; /* Maintain square aspect ratio */
+        }
+
+        #score-display {
+            margin-top: 15px;
+            font-size: 1.5em;
+            color: #0f0;
+            text-shadow: 0 0 5px rgba(0, 255, 0, 0.7);
+        }
+
+        #message-overlay {
+            position: absolute; /* Position over the canvas */
+            background-color: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-size: 2em;
+            text-align: center;
+            z-index: 10;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+            box-sizing: border-box; /* Include padding in dimensions */
+        }
+
+        #message-overlay.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        #message-overlay button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 0.8em; /* Relative to parent's font size */
+            background-color: #0f0;
+            color: #000;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+            transition: background-color 0.2s, transform 0.2s;
+        }
+
+        #message-overlay button:hover {
+            background-color: #0c0;
+            transform: scale(1.05);
+        }
+
+        @media (max-width: 600px) {
+            #game-container {
+                margin: 10px;
+                padding: 10px;
+            }
+            #score-display {
+                font-size: 1.2em;
+            }
+            #message-overlay {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="score-display">SCORE: 0</div>
+        <div id="message-overlay">
+            <span id="game-message">GAME OVER!</span>
+            <button id="restart-button">Restart</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score-display');
+        const messageOverlay = document.getElementById('message-overlay');
+        const gameMessage = document.getElementById('game-message');
+        const restartButton = document.getElementById('restart-button');
+
+        let snakeGameId = null;
+        let boardWidth = 20; // Default, will be updated by backend
+        let boardHeight = 20; // Default, will be updated by backend
+        let CELL_SIZE = 20; // This will be calculated dynamically based on canvas size
+        let currentGameState = null;
+        let gameLoopInterval = null;
+        let desiredDirection = 'RIGHT'; // Player's desired direction
+
+        const BASE_TICK_RATE = 150; // Milliseconds per game tick for initial speed
+        const SPEED_INCREASE_FACTOR = 0.95; // Multiplier for speed, e.g., 0.9 means 5% faster per score increment
+        const MIN_TICK_RATE = 50; // Minimum tick rate to prevent it from becoming too fast
+
+        // --- Utility Functions ---
+        function getBackendUrl(path) {
+            // Use a relative path to assume backend is on the same host/port.
+            // For separate development setups (e.g., frontend on 3000, backend on 8000),
+            // you might need to specify: `http://localhost:8000${path}`
+            return path;
+        }
+
+        function resizeCanvas() {
+            // Calculate CELL_SIZE based on the actual rendered width of the canvas
+            const containerWidth = canvas.clientWidth;
+            CELL_SIZE = Math.floor(containerWidth / boardWidth); 
+            canvas.width = boardWidth * CELL_SIZE;
+            canvas.height = boardHeight * CELL_SIZE;
+
+            // Adjust overlay position and size to match canvas
+            const canvasRect = canvas.getBoundingClientRect();
+            const containerRect = canvas.parentElement.getBoundingClientRect(); 
+
+            messageOverlay.style.width = `${canvasRect.width}px`;
+            messageOverlay.style.height = `${canvasRect.height}px`;
+            // Position relative to its parent container (game-container)
+            messageOverlay.style.top = `${canvasRect.top - containerRect.top}px`;
+            messageOverlay.style.left = `${canvasRect.left - containerRect.left}px`;
+        }
+
+        // --- Drawing Functions ---
+        function draw() {
+            if (!currentGameState) return;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw snake
+            ctx.fillStyle = 'lime';
+            currentGameState.snake.forEach(segment => {
+                ctx.fillRect(segment.x * CELL_SIZE, segment.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                ctx.strokeStyle = 'darkgreen';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(segment.x * CELL_SIZE, segment.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            });
+
+            // Draw food, but only if it's a valid position (not (-1,-1) for game won)
+            if (currentGameState.food.x !== -1 && currentGameState.food.y !== -1) {
+                ctx.fillStyle = 'red';
+                ctx.fillRect(currentGameState.food.x * CELL_SIZE, currentGameState.food.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                ctx.strokeStyle = 'darkred';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(currentGameState.food.x * CELL_SIZE, currentGameState.food.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            }
+
+            // Update score display
+            scoreDisplay.textContent = `SCORE: ${currentGameState.score}`;
+
+            // Handle game over/win messages
+            if (currentGameState.game_over || currentGameState.game_won) {
+                if (gameLoopInterval) {
+                    clearInterval(gameLoopInterval);
+                    gameLoopInterval = null; 
+                }
+                gameMessage.textContent = currentGameState.game_won ? "YOU WIN!" : "GAME OVER!";
+                messageOverlay.classList.add('visible');
+            } else {
+                messageOverlay.classList.remove('visible');
+            }
+        }
+
+        // --- Game Logic and API Interaction ---
+        async function startGame() {
+            try {
+                const response = await fetch(getBackendUrl('/game/start'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+                
+                currentGameState = data;
+                snakeGameId = data.game_id;
+                boardWidth = data.board_width;
+                boardHeight = data.board_height;
+                desiredDirection = data.direction; // Sync initial direction with backend
+
+                resizeCanvas(); // Ensure canvas is correctly sized after board dimensions are known
+                draw(); // Initial draw
+
+                // Clear any existing game loop and start a new one
+                if (gameLoopInterval) {
+                    clearInterval(gameLoopInterval);
+                }
+                startGameLoop(); 
+            } catch (error) {
+                console.error('Error starting game:', error);
+                alert('Failed to start game. Please try again.');
+            }
+        }
+
+        function startGameLoop() {
+            let currentTickRate = BASE_TICK_RATE;
+            if (currentGameState) {
+                // Increase speed based on score (more score = faster)
+                currentTickRate = BASE_TICK_RATE * Math.pow(SPEED_INCREASE_FACTOR, currentGameState.score);
+                currentTickRate = Math.max(currentTickRate, MIN_TICK_RATE); // Cap minimum tick rate
+            }
+            gameLoopInterval = setInterval(gameTick, currentTickRate);
+            console.log("New tick rate:", currentTickRate);
+        }
+
+        async function gameTick() {
+            if (!snakeGameId || currentGameState.game_over || currentGameState.game_won) {
+                clearInterval(gameLoopInterval);
+                gameLoopInterval = null;
+                return;
+            }
+
+            try {
+                const response = await fetch(getBackendUrl(`/game/${snakeGameId}/move`), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ direction: desiredDirection }), // Send the desired direction
+                });
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        console.error('Game not found on server, attempting to restart.');
+                        startGame(); 
+                        return;
+                    }
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                
+                const previousScore = currentGameState ? currentGameState.score : -1;
+                currentGameState = data; // Update game state with authoritative data from backend
+
+                draw();
+
+                // If score changed, or game state changed (e.g., game_over), restart interval to adjust speed
+                if (currentGameState.score !== previousScore || currentGameState.game_over || currentGameState.game_won) {
+                    if (gameLoopInterval) clearInterval(gameLoopInterval);
+                    if (!currentGameState.game_over && !currentGameState.game_won) {
+                        startGameLoop();
+                    }
+                }
+            } catch (error) {
+                console.error('Error during game tick:', error);
+                clearInterval(gameLoopInterval);
+                gameLoopInterval = null;
+                alert('Connection lost or server error. Game stopped.');
+            }
+        }
+
+        // --- Event Listeners ---
+        document.addEventListener('keydown', e => {
+            if (currentGameState && !currentGameState.game_over && !currentGameState.game_won) {
+                // Use the backend's current snake direction to prevent immediate 180-degree turns
+                const currentSnakeDirection = currentGameState.direction; 
+                let newDesiredDirection = desiredDirection; // Start with current desired
+
+                switch (e.key) {
+                    case 'ArrowUp':
+                        if (currentSnakeDirection !== 'DOWN') newDesiredDirection = 'UP';
+                        break;
+                    case 'ArrowDown':
+                        if (currentSnakeDirection !== 'UP') newDesiredDirection = 'DOWN';
+                        break;
+                    case 'ArrowLeft':
+                        if (currentSnakeDirection !== 'RIGHT') newDesiredDirection = 'LEFT';
+                        break;
+                    case 'ArrowRight':
+                        if (currentSnakeDirection !== 'LEFT') newDesiredDirection = 'RIGHT';
+                        break;
+                }
+                // Only update desiredDirection if it's different and valid
+                if (newDesiredDirection !== desiredDirection) {
+                    desiredDirection = newDesiredDirection;
+                    // For a snappier feel, you could potentially trigger a gameTick immediately
+                    // instead of waiting for the next interval, but it might lead to more requests.
+                    // For now, rely on the interval.
+                }
+            }
+        });
+
+        restartButton.addEventListener('click', () => {
+            messageOverlay.classList.remove('visible');
+            startGame();
+        });
+
+        window.addEventListener('resize', resizeCanvas);
+
+        // --- Initialization ---
+        window.onload = () => {
+            startGame();
+        };
+    </script>
+</body>
+</html>
